@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Virtual Scale</title>
+<style>
+  :root { --bg:#f4f6fb; --card:#fff; --fg:#1b2333; --mut:#6b7488; --acc:#2563eb; --ok:#16a34a; --bad:#dc2626; --bd:#dde2ee; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1420; --card:#171e2e; --fg:#e8ecf6; --mut:#8c97ad; --bd:#2a3347; } }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px system-ui,sans-serif; background:var(--bg); color:var(--fg); display:flex; justify-content:center; padding:24px 16px; }
+  main { width:100%; max-width:520px; }
+  h1 { font-size:20px; margin:0 0 4px; } p.sub { color:var(--mut); margin:0 0 16px; }
+  .card { background:var(--card); border:1px solid var(--bd); border-radius:14px; padding:16px; margin-bottom:14px; }
+  .scale { text-align:center; }
+  .screen { border-radius:12px; padding:14px 8px 10px; background:#0b1020; color:var(--lc,#4f8cff); transition:filter .2s, color .2s; }
+  .display { font:700 52px/1 ui-monospace,Consolas,monospace; letter-spacing:1px; padding:6px 0; }
+  .stage { color:#9aa4bd; min-height:20px; font-size:13px; }
+  .meta { color:#9aa4bd; font-size:12px; margin-top:4px; }
+  .row { display:flex; gap:10px; align-items:center; margin:10px 0; flex-wrap:wrap; }
+  label { color:var(--mut); font-size:13px; min-width:92px; }
+  input, select { flex:1; padding:9px 10px; border:1px solid var(--bd); border-radius:8px; background:var(--bg); color:var(--fg); font:inherit; min-width:0; }
+  input[type=checkbox] { flex:none; width:auto; }
+  button { padding:11px 16px; border:0; border-radius:10px; background:var(--acc); color:#fff; font:600 15px system-ui; cursor:pointer; flex:1; }
+  button.sec { background:transparent; color:var(--fg); border:1px solid var(--bd); }
+  .pill { display:inline-block; padding:3px 10px; border-radius:99px; font-size:12px; background:var(--bd); }
+  .pill.on { background:var(--ok); color:#fff; } .pill.off { background:var(--bad); color:#fff; }
+  pre { margin:0; max-height:150px; overflow:auto; font-size:12px; color:var(--mut); }
+  a { color:var(--acc); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Virtual Scale</h1>
+  <p class="sub">Acts as one weighing scale for testing the app. Pair it from the app, then press Step on. <a href="/web" target="_blank">Web login page</a></p>
+
+  <div class="card scale">
+    <div><span id="link" class="pill off">hub offline</span> <span id="app" class="pill">no app</span></div>
+    <div class="screen" id="screen">
+      <div class="display" id="display">0.0 kg</div>
+      <div class="stage" id="stage">Idle</div>
+      <div class="meta" id="meta"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row"><label>Scale type</label>
+      <select id="kind"><option value="body">Body-fat scale (weight + impedance)</option><option value="food">Food / kitchen scale (grams)</option><option value="coffee">Coffee scale (grams + timer)</option></select></div>
+    <div class="row"><label>Device name</label><input id="name" value="CF568_G"></div>
+    <div class="row"><label>MAC</label><input id="mac" value="AA:BB:CC:00:00:01"></div>
+    <div class="row" id="capsrow"><label>Features</label><label style="min-width:0"><input type="checkbox" id="cWifi" checked> Wi-Fi</label><label style="min-width:0"><input type="checkbox" id="cFinger" checked> Fingerprint</label></div>
+    <div class="row"><button class="sec" id="reg">Apply &amp; re-register</button></div>
+  </div>
+
+  <div class="card">
+    <div class="row"><label id="wlabel">Weight (kg)</label><input id="weight" type="number" step="0.1" value="72.5"></div>
+    <div class="row" id="improw"><label>Impedance (Ω)</label><input id="imp" type="number" step="1" value="520"></div>
+    <div class="row"><label>Behavior</label>
+      <select id="mode"><option value="normal">Normal</option><option value="error">Impedance error (no contact)</option><option value="unstable">Never stabilises</option></select></div>
+    <div class="row"><button id="on">Step on</button><button class="sec" id="off">Step off</button></div>
+    <div class="row" id="tarerow" style="display:none"><button class="sec" id="tare">Tare (zero)</button></div>
+  </div>
+
+  <div class="card"><div style="color:var(--mut);font-size:12px;margin-bottom:6px">Device log · Wi-Fi password for HomeWiFi is <b>homepass123</b></div><pre id="log"></pre></div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+let ws, timer, tareOffset = 0;
+const dev = { fw: '1.0.3', light: '#4f8cff', brightness: 80, language: 'en', voice: true, unit: 'kg', wifi: null, battery: 78, fingers: [{ id: 1, name: 'Slot 1' }], fwBuf: [], fwSize: 0, fwVersion: null };
+const NETS = [{ ssid: 'HomeWiFi', rssi: -48, secure: true, pass: 'homepass123', band: 2.4 }, { ssid: 'CafeGuest', rssi: -61, secure: false, band: 2.4 }, { ssid: 'Office5G', rssi: -55, secure: true, pass: 'office5g', band: 5 }, { ssid: 'Neighbor', rssi: -82, secure: true, pass: 'secret', band: 2.4 }];
+const log = (s) => { const l = $('log'); l.textContent = `${new Date().toLocaleTimeString()} ${s}\n` + l.textContent; };
+const kind = () => $('kind').value;
+const isGrams = () => kind() !== 'body';
+
+function paint() {
+  const s = $('screen');
+  s.style.setProperty('--lc', dev.light);
+  s.style.filter = `brightness(${0.35 + dev.brightness / 100 * 0.65})`;
+  $('meta').textContent = `fw ${dev.fw} · ${dev.wifi ? 'Wi-Fi ' + dev.wifi : 'no Wi-Fi'} · lang ${dev.language} · voice ${dev.voice ? 'on' : 'off'} · ${dev.battery}%`;
+}
+function show(val, st) {
+  $('display').textContent = isGrams() ? `${val.toFixed(0)} g` : (dev.unit === 'lb' ? `${(val * 2.20462).toFixed(1)} lb` : `${val.toFixed(1)} kg`);
+  $('stage').textContent = st;
+}
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+const event = (name, data = {}) => send({ type: 'event', event: name, data });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function info() { return { fw: dev.fw, battery: dev.battery, light: dev.light, brightness: dev.brightness, language: dev.language, voice: dev.voice, unit: dev.unit, wifi: dev.wifi, kind: kind() }; }
+
+async function onCmd(m) {
+  log('cmd ' + m.cmd + (m.cmd === 'fwChunk' ? ' #' + m.seq : ''));
+  switch (m.cmd) {
+    case 'unit': dev.unit = m.value; show(0, 'Unit ' + m.value); break;
+    case 'tare': tare(); break;
+    case 'voice': dev.voice = !!m.value; break;
+    case 'light': dev.light = m.color; break;
+    case 'brightness': dev.brightness = Math.max(0, Math.min(100, Number(m.value))); break;
+    case 'language': dev.language = m.value; break;
+    case 'info': event('info', info()); break;
+    case 'wifiScan': await sleep(1200); event('wifiList', { networks: NETS.map(({ ssid, rssi, secure, band }) => ({ ssid, rssi, secure, band })) }); break;
+    case 'wifiConnect': {
+      event('wifiStatus', { state: 'connecting', ssid: m.ssid });
+      await sleep(2000);
+      const n = NETS.find((x) => x.ssid === m.ssid);
+      if (!n) event('wifiStatus', { state: 'failed', ssid: m.ssid, reason: 'not_found' });
+      else if (n.band === 5) event('wifiStatus', { state: 'failed', ssid: m.ssid, reason: 'unsupported_5ghz' });
+      else if (n.secure && n.pass !== m.password) event('wifiStatus', { state: 'failed', ssid: m.ssid, reason: 'wrong_password' });
+      else { dev.wifi = m.ssid; event('wifiStatus', { state: 'connected', ssid: m.ssid }); }
+      break;
+    }
+    case 'fingerList': event('fingerUsers', { users: dev.fingers }); break;
+    case 'fingerEnroll': {
+      if (dev.fingers.length >= 5) return event('fingerError', { reason: 'full' });
+      for (let step = 1; step <= 3; step++) { await sleep(900); event('fingerProgress', { step, of: 3 }); }
+      const id = Math.max(0, ...dev.fingers.map((f) => f.id)) + 1;
+      dev.fingers.push({ id, name: m.name || 'Slot ' + id });
+      event('fingerUsers', { users: dev.fingers, added: id });
+      break;
+    }
+    case 'fingerDelete': dev.fingers = dev.fingers.filter((f) => f.id !== m.id); event('fingerUsers', { users: dev.fingers }); break;
+    case 'fwStart': dev.fwBuf = []; dev.fwSize = m.size; dev.fwVersion = m.version; event('fwProgress', { pct: 0 }); break;
+    case 'fwChunk': {
+      const bin = atob(m.data); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+      dev.fwBuf.push(a);
+      const got = dev.fwBuf.reduce((n, x) => n + x.length, 0);
+      event('fwProgress', { pct: Math.min(99, Math.floor(got / dev.fwSize * 100)) });
+      break;
+    }
+    case 'fwEnd': {
+      const total = new Uint8Array(dev.fwBuf.reduce((n, x) => n + x.length, 0)); let o = 0; for (const x of dev.fwBuf) { total.set(x, o); o += x.length; }
+      const hash = [...new Uint8Array(await crypto.subtle.digest('SHA-256', total))].map((b) => b.toString(16).padStart(2, '0')).join('');
+      await sleep(800);
+      if (total.length === dev.fwSize && hash === m.sha256) { dev.fw = dev.fwVersion; event('fwDone', { ok: true, version: dev.fw }); log('firmware updated to ' + dev.fw); }
+      else event('fwDone', { ok: false, reason: 'checksum' });
+      break;
+    }
+  }
+  paint();
+}
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => { $('link').textContent = 'hub online'; $('link').className = 'pill on'; register(); };
+  ws.onclose = () => { $('link').textContent = 'hub offline'; $('link').className = 'pill off'; $('app').textContent = 'no app'; $('app').className = 'pill'; setTimeout(connect, 1500); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'appConnected') { $('app').textContent = 'app connected'; $('app').className = 'pill on'; log('app connected'); }
+    else if (m.type === 'appDisconnected') { $('app').textContent = 'no app'; $('app').className = 'pill'; log('app disconnected'); }
+    else if (m.type === 'cmd') onCmd(m);
+  };
+}
+function register() {
+  const caps = [];
+  if (kind() === 'body') { if ($('cWifi').checked) caps.push('wifi'); if ($('cFinger').checked) caps.push('fingerprint'); }
+  send({ type: 'hello', role: 'scale', mac: $('mac').value, name: $('name').value, kind: kind(), caps });
+  log('registered ' + $('name').value + (caps.length ? ' [' + caps.join(', ') + ']' : ''));
+}
+
+function stop() { clearInterval(timer); timer = null; }
+function stepOn() {
+  stop();
+  const target = Number($('weight').value) || 0;
+  const mode = $('mode').value, g = isGrams();
+  const imp = (mode === 'error' || g) ? 0 : Number($('imp').value) || 0;
+  let t = 0;
+  const RAMP = 15, HOLD = 12, MEAS = 14; // ticks of 100ms
+  timer = setInterval(() => {
+    t++;
+    const base = g ? target - tareOffset : target;
+    if (t <= RAMP) {
+      const v = Math.max(0, base * (t / RAMP) + (Math.random() - 0.5) * base * 0.06);
+      show(v, 'Weighing…'); send({ type: 'reading', value: v, unit: g ? 'g' : 'kg', stable: false, stage: 'weighing', impedance: 0 });
+    } else if (t <= RAMP + HOLD) {
+      const jitter = mode === 'unstable' ? (Math.random() - 0.5) * base * 0.05 : (Math.random() - 0.5) * 0.04;
+      const v = Math.max(0, base + jitter);
+      const stable = mode !== 'unstable' && t > RAMP + 6;
+      show(v, stable ? 'Stable' : 'Settling…'); send({ type: 'reading', value: v, unit: g ? 'g' : 'kg', stable, stage: 'weighing', impedance: 0 });
+    } else if (!g && t <= RAMP + HOLD + MEAS) {
+      show(base, 'Measuring body composition…'); send({ type: 'reading', value: base, unit: 'kg', stable: true, stage: 'measuring', impedance: 0 });
+    } else {
+      stop();
+      if (mode === 'unstable') { show(base, 'No stable reading'); return; }
+      const err = !g && imp === 0;
+      show(base, err ? 'Impedance error' : 'Done');
+      send({ type: 'reading', value: base, unit: g ? 'g' : 'kg', stable: true, stage: err ? 'error' : 'done', impedance: imp });
+      log(err ? 'impedance error sent' : `final ${base.toFixed(1)} ${g ? 'g' : 'kg'} imp ${imp}`);
+    }
+  }, 100);
+  log('step on');
+}
+function stepOff() { stop(); show(0, 'Idle'); send({ type: 'reading', value: 0, unit: isGrams() ? 'g' : 'kg', stable: true, stage: 'idle', impedance: 0 }); log('step off'); }
+function tare() { tareOffset = Number($('weight').value) || 0; show(0, 'Tared'); send({ type: 'reading', value: 0, unit: 'g', stable: true, stage: 'idle', impedance: 0 }); log('tared at ' + tareOffset); }
+
+function syncKind() {
+  const k = kind(), g = k !== 'body';
+  $('wlabel').textContent = g ? 'Weight (g)' : 'Weight (kg)';
+  $('improw').style.display = g ? 'none' : 'flex';
+  $('tarerow').style.display = g ? 'flex' : 'none';
+  $('capsrow').style.display = g ? 'none' : 'flex';
+  $('name').value = k === 'food' ? 'CK850' : k === 'coffee' ? 'CK863' : 'CF568_G';
+  $('mac').value = k === 'food' ? 'AA:BB:CC:00:00:02' : k === 'coffee' ? 'AA:BB:CC:00:00:03' : 'AA:BB:CC:00:00:01';
+  $('weight').value = k === 'coffee' ? '18' : g ? '250' : '72.5';
+  show(0, 'Idle'); paint();
+}
+$('kind').onchange = () => { syncKind(); register(); };
+$('reg').onclick = register; $('on').onclick = stepOn; $('off').onclick = stepOff; $('tare').onclick = tare;
+syncKind(); connect();
+</script>
+</body>
+</html>

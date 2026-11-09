@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unique Health Web</title>
+<style>
+  :root { --bg:#eef0fd; --card:#fff; --fg:#1e2340; --mut:#8a90a6; --acc:#3f6bf4; --bd:#dde2ee; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#13162a; --card:#1d2136; --fg:#e8eaf6; --mut:#8c97ad; --bd:#2a3347; } }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px system-ui,sans-serif; background:linear-gradient(#c3c6fa,var(--bg) 40%); color:var(--fg); min-height:100vh; display:flex; justify-content:center; padding:32px 16px; }
+  main { width:100%; max-width:520px; }
+  .card { background:var(--card); border-radius:18px; padding:20px; margin-bottom:14px; text-align:center; }
+  h1 { font-size:22px; margin:0 0 4px; } p { color:var(--mut); margin:6px 0; }
+  img { width:220px; height:220px; background:#fff; border-radius:12px; padding:6px; }
+  .state { font-weight:700; margin-top:10px; }
+  button { background:var(--acc); color:#fff; border:0; border-radius:99px; padding:10px 22px; font:600 15px system-ui; cursor:pointer; }
+  table { width:100%; border-collapse:collapse; text-align:left; } td,th { padding:6px 4px; border-bottom:1px solid var(--bd); }
+</style>
+</head>
+<body>
+<main>
+  <div class="card" id="login">
+    <h1>Unique Health Web</h1>
+    <p>Open the app, go to <b>More → Scan QR to log in</b> and scan this code.</p>
+    <img id="qr" alt="QR code">
+    <div class="state" id="state">Creating code…</div>
+    <p><button id="again" style="display:none">New code</button></p>
+  </div>
+  <div id="dash" style="display:none">
+    <div class="card"><h1 id="hello"></h1><p id="email"></p></div>
+    <div class="card"><table id="rows"></table></div>
+    <div class="card"><button id="out">Sign out</button></div>
+  </div>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const api = async (p, o = {}) => (await fetch(p, o)).json();
+let timer, token;
+async function start() {
+  clearInterval(timer); $('again').style.display = 'none';
+  const r = (await api('/app/user/qrCode/create', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).data;
+  $('qr').src = '/app/qr?text=' + encodeURIComponent(r.payload);
+  $('state').textContent = 'Waiting for scan…';
+  timer = setInterval(async () => {
+    const s = (await api('/app/user/qrCode/status?id=' + r.id)).data;
+    if (s.status === 'scanned') $('state').textContent = 'Scanned' + (s.nickname ? ' by ' + s.nickname : '') + '. Confirm on your phone…';
+    else if (s.status === 'waiting') $('state').textContent = 'Waiting for scan…';
+    else if (s.status === 'expired' || s.status === 'done') { clearInterval(timer); $('state').textContent = 'Code expired'; $('again').style.display = ''; }
+    else if (s.status === 'confirmed') { clearInterval(timer); token = s.accessToken; dashboard(s.user); }
+  }, 1500);
+}
+async function dashboard(user) {
+  const h = { 'Access-Token': token };
+  const members = (await api('/app/memberDevice/list', { headers: h })).data;
+  const me = members.find((m) => m.isSelf) || members[0];
+  const recs = (await api('/app/bodyData/list?memberId=' + me.id, { headers: h })).data.slice(0, 8);
+  $('login').style.display = 'none'; $('dash').style.display = '';
+  $('hello').textContent = 'Hello, ' + user.nickname; $('email').textContent = user.email;
+  $('rows').innerHTML = '<tr><th>Date</th><th>Weight</th><th>Body fat</th></tr>' + recs.map((r) => `<tr><td>${new Date(r.ts).toLocaleDateString()}</td><td>${r.weight.toFixed(1)} kg</td><td>${r.metrics.bodyFat ?? '–'}${r.metrics.bodyFat ? ' %' : ''}</td></tr>`).join('');
+}
+$('again').onclick = start; $('out').onclick = () => { token = null; $('dash').style.display = 'none'; $('login').style.display = ''; start(); };
+start();
+</script>
+</body>
+</html>
